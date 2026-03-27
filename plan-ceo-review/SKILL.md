@@ -460,10 +460,14 @@ DESIGN=$(ls -t ~/.gstack/projects/$SLUG/*-$BRANCH-design-*.md 2>/dev/null | head
 [ -n "$DESIGN" ] && echo "Design doc found: $DESIGN" || echo "No design doc found"
 STRATEGY=$(ls -t ~/.gstack/projects/$SLUG/*-strategy-*.md 2>/dev/null | grep -v brief | head -1)
 [ -n "$STRATEGY" ] && echo "Strategy doc found: $STRATEGY" || echo "No strategy doc found"
+SOCIAL=$(ls -t ~/.gstack/projects/$SLUG/*-social-strategy-*.md 2>/dev/null | head -1)
+[ -n "$SOCIAL" ] && echo "Social strategy doc found: $SOCIAL" || echo "No social strategy doc found"
 ```
 If a design doc exists (from `/office-hours`), read it. Use it as the source of truth for the problem statement, constraints, and chosen approach. If it has a `Supersedes:` field, note that this is a revised design.
 
 If a strategy doc exists (from `/strategist`), read it for competitive context, guiding policy, and strategic priorities. Use it to inform scope decisions — does this plan align with the strategic direction?
+
+If a social strategy doc exists, read it. Surface content pillars and primary platform as informational context during the system audit.
 
 **Handoff note check** (reuses $SLUG and $BRANCH from the design doc check above):
 ```bash
