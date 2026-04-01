@@ -179,6 +179,8 @@ Each skill feeds into the next. `/office-hours` writes a design doc that `/plan-
 | `/browse` | **QA Engineer** | Give the agent eyes. Real Chromium browser, real clicks, real screenshots. ~100ms per command. `$B connect` launches your real Chrome as a headed window — watch every action live. |
 | `/setup-browser-cookies` | **Session Manager** | Import cookies from your real browser (Chrome, Arc, Brave, Edge) into the headless session. Test authenticated pages. |
 | `/autoplan` | **Review Pipeline** | One command, fully reviewed plan. Runs CEO → design → eng review automatically with encoded decision principles. Surfaces only taste decisions for your approval. |
+| `/strategist` | **Senior Strategist** | Competitive strategy with framework orchestration. Brief mode: autonomous competitive intelligence with cited research. Session mode: Rumelt's kernel diagnosis with framework selection. |
+| `/social-strategy` | **Social Strategist** | Social media and thought leadership strategy. Audits competitor social presence, maps thought leaders, recommends platforms, generates voice prompt files. |
 | `/learn` | **Memory** | Manage what gstack learned across sessions. Review, search, prune, and export project-specific patterns, pitfalls, and preferences. Learnings compound across sessions so gstack gets smarter on your codebase over time. |
 
 ### Power tools
@@ -292,7 +294,7 @@ Available skills: /office-hours, /plan-ceo-review, /plan-eng-review, /plan-desig
 /design-consultation, /design-shotgun, /design-html, /review, /ship, /land-and-deploy,
 /canary, /benchmark, /browse, /connect-chrome, /qa, /qa-only, /design-review,
 /setup-browser-cookies, /setup-deploy, /retro, /investigate, /document-release, /codex,
-/cso, /autoplan, /adr, /strategist, /careful, /freeze, /guard, /unfreeze, /gstack-upgrade, /learn.
+/cso, /autoplan, /adr, /strategist, /social-strategy, /careful, /freeze, /guard, /unfreeze, /gstack-upgrade, /learn.
 ```
 
 ## License
