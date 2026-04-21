@@ -1,0 +1,44 @@
+name: Sync Fork With Upstream
+
+on:
+  schedule:
+    # Daily at 13:17 UTC. Offset from :00 to dodge the top-of-hour cron storm.
+    - cron: '17 13 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Merge upstream/main into fork/main
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/garrytan/gstack.git
+          git fetch upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already up to date with upstream/main. Nothing to do."
+            exit 0
+          fi
+
+          if ! git merge --no-edit -m "merge: sync fork main with upstream/main" upstream/main; then
+            echo "::error::Merge conflict with fork customizations. Resolve manually:"
+            echo "  git fetch upstream && git merge upstream/main"
+            git merge --abort
+            exit 1
+          fi
+
+          git push origin main
