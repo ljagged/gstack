@@ -1,5 +1,177 @@
 # Changelog
 
+## [1.5.1.0] - 2026-04-20
+
+## **Three visible bugs in v1.4.0.0 /make-pdf, all fixed.**
+
+Page footers showed "6 of 8" twice on every page because Chromium's native footer and our print CSS were both rendering numbers. A markdown title containing `&` rendered as `Faber &amp;amp; Faber` in `<title>` and TOC entries, because the extractors stripped tags but forgot to decode entities. On Linux (Docker, CI, servers), body text fell through to DejaVu Sans because neither Helvetica nor Arial is installed by default, and nothing in the font stack caught that. This release fixes all three and extends the fix beyond the obvious symptom each time.
+
+### The numbers that matter
+
+All three bugs were caught and expanded in review before any code was written. The plan went through `/plan-eng-review` (Claude), then `/codex` (outside voice), then implementation. Source: `.github/docker/Dockerfile.ci` (Linux fonts), `make-pdf/test/render.test.ts` (17 new tests), `git log main..HEAD` (this branch).
+
+| Surface | Before (v1.4.0.0) | After (v1.5.1.0) |
+|---------|-------------------|-----------------|
+| Page footer | "6 of 8" stacked twice | "6 of 8" once |
+| `# Faber & Faber` in `<title>` | `Faber &amp;amp; Faber` | `Faber &amp; Faber` |
+| TOC entry with `&` | Double-escaped | Single-escaped |
+| `&#169;` (copyright) in H1 | Broken | Decodes to `©` |
+| `--no-page-numbers` CLI flag | Silently did nothing | Actually suppresses page numbers |
+| `--footer-template` | Layered CSS page numbers on top | Custom footer wins cleanly |
+| Linux PDF body font | DejaVu Sans (wrong) | Liberation Sans (metric-compatible Helvetica clone) |
+
+| Review layer | Findings | Outcome |
+|--------------|----------|---------|
+| `/plan-eng-review` (Claude) | 1 architectural gap | expanded Bug 1 scope to include CSS-side conditional |
+| `/codex` (outside voice) | 11 findings | 11 incorporated (data flow, TOC site, decoder collision, footer semantic, test contract, scope boundaries, font dependency) |
+| Cross-model agreement rate | ~30% | Codex found 7 issues Claude's eng review missed by staying too high-altitude |
+
+The agreement rate is the tell. One reviewer was not enough on this diff. Codex caught that my original "one-line fix" for Bug 1 would have left the `--no-page-numbers` CLI flag silently dead, because `RenderOptions` didn't carry `pageNumbers` and the orchestrator's `render()` call didn't pass it. Without the second opinion, the CLI flag ships broken again.
+
+### What this means for anyone generating PDFs
+
+Page numbers are now controlled by one flag from CLI to CSS, with the custom-footer semantic restored. Titles, cover pages, and TOC entries render HTML entities correctly, including numeric entities like `&#169;`. Linux environments no longer need to know about fonts-liberation — the Dockerfile installs it explicitly and a build-time `fc-match` check fails the image if the font disappears. Run `bun run dev make-pdf <file.md> --cover --toc` on Mac, and now also inside Docker, and the output looks the same.
+
+### Itemized changes
+
+#### Fixed
+
+- **Page numbers no longer render twice on every page.** Chromium's native footer used to layer on top of our `@page @bottom-center` CSS. Now CSS is the single source of truth; Chromium native numbering is off unconditionally.
+- **`--no-page-numbers` works end-to-end.** The CLI flag now reaches the CSS layer via `RenderOptions.pageNumbers`. Previously it died at the orchestrator and the CSS kept rendering numbers regardless.
+- **`--footer-template` cleanly replaces the stock footer.** Passing a custom footer now also suppresses the CSS page numbers, preserving the original "custom footer wins" semantic that existed before Bug 1 collided with it.
+- **HTML entities in titles, cover pages, and TOC entries render correctly.** A markdown heading like `# Faber & Faber` renders as `Faber &amp; Faber` in `<title>` (single-escaped) instead of `Faber &amp;amp; Faber` (double-escaped). Covers both extractor call sites: `extractFirstHeading` (title + cover) and `extractHeadings` (TOC).
+- **Numeric HTML entities decode too.** `&#169;` in an H1 now renders as `©` in the PDF title. Decimal and hex numeric entities both supported.
+- **Linux PDFs render in Liberation Sans instead of DejaVu Sans.** Font stacks in all four print-CSS slots (body, running header, page number, CONFIDENTIAL label) now include `"Liberation Sans"` between Helvetica and Arial. Metric-compatible, SIL OFL 1.1, installs via `fonts-liberation`.
+
+#### Changed
+
+- `.github/docker/Dockerfile.ci` installs `fonts-liberation` + `fontconfig` explicitly with retries, runs `fc-cache -f`, and verifies `fc-match "Liberation Sans"` in the final build step. Previously relied on Playwright's `install-deps` pulling it in transitively, which could silently regress on upgrade.
+- `SKILL.md.tmpl` documents the Linux font dependency for users who install outside CI/Docker.
+
+#### For contributors
+
+- New helper `decodeTextEntities` in `render.ts` (distinct from existing `decodeTypographicEntities`, which intentionally preserves `&amp;` in pipeline HTML where `&amp;amp;` can be legitimate). Use the new one when extracting plain text destined for `<title>`, cover, or TOC.
+- `PrintCssOptions.pageNumbers` wraps the `@bottom-center` rule in a conditional matching the existing `showConfidential` pattern. Thread `pageNumbers` through `RenderOptions` and forward from `orchestrator.ts` into both `render()` call sites (generate + preview).
+- 17 new tests in `make-pdf/test/render.test.ts`: `printCss` pageNumbers isolation (3), `render()` data flow with footerTemplate (4), parameterized entity contracts across `&`, `<`, `>`, `©`, `—` (5), `<title>` exact single-escape assertion, TOC single-escape, numeric entity decode, smartypants-interacts contract, Liberation Sans body + @page box coverage (2).
+- Known test gaps (small, future PR): hex numeric entity path, amp-last ordering with double-encoded input, SKILL.md Linux note content assertion. Orchestrator → `browseClient.pdf({pageNumbers: false})` and orchestrator → `render()` forwarding are covered transitively via the CSS end-to-end tests, not asserted directly.
+
+## [1.5.0.0] - 2026-04-20
+
+## **Your sidebar agent now defends itself against prompt injection.**
+
+Open a web page with hidden malicious instructions, gstack's sidebar doesn't just trust that Claude will do the right thing. A 22MB ML classifier bundled with the browser scans every page you load, every tool output, every message you send. If it looks like a prompt injection attack, the session stops before Claude executes anything dangerous. A secret canary token in the system prompt catches attempts to exfil your session, if that token shows up anywhere in Claude's output, tool arguments, URLs, or file writes, the session terminates and you see exactly which layer fired and at what confidence. Attempts go to a local log you can read, and optionally to aggregate community telemetry so every gstack user becomes a sensor for defense improvements.
+
+### What changes for you
+
+Open the Chrome sidebar and you'll see a small `SEC` badge in the top right. Green means the full defense stack is loaded. Amber means something degraded (model warmup still running on first-ever use, about 30s). Red means the security module itself crashed and you're running on architectural controls only. Hover for per-layer detail.
+
+If an attack fires, a centered alert-heavy banner appears, "Session terminated, prompt injection detected from {domain}". Expand "What happened" and you see the exact classifier scores. Restart with one click. No mystery.
+
+### The numbers
+
+| Metric | Before v1.4 | After v1.4 |
+|---|---|---|
+| Defense layers | 4 (content-security.ts) | **8** (adds ML content, ML transcript, canary, verdict combiner) |
+| Attack channels covered by canary | 0 | **5** (text stream, tool args, URLs, file writes, subprocess args) |
+| First-party classifier cost | none | **$0** (bundled, runs locally) |
+| Model size shipped | 0 | **22MB** (TestSavantAI BERT-small, int8 quantized) |
+| Optional ensemble model | none | **721MB DeBERTa-v3** (opt-in via `GSTACK_SECURITY_ENSEMBLE=deberta`) |
+| BLOCK decision rule | none | **2-of-2 ML agreement** (or 2-of-3 with ensemble), prevents single-classifier false positives from killing sessions |
+| Tests covering security surface | 12 | **280** (25 foundation + 23 adversarial + 10 integration + 9 classifier + 7 Playwright + 3 bench + 6 bun-native + 15 source-contracts + 11 adversarial-fix regressions + others) |
+| Attack telemetry aggregation | local file only | **community-pulse edge function + gstack-security-dashboard CLI** |
+
+### What actually ships
+
+* **security.ts** — canary injection plus check, verdict combiner with ensemble rule, attack log with rotation, cross-process session state, device-salted payload hashing
+* **security-classifier.ts** — TestSavantAI (default) plus Claude Haiku transcript check plus opt-in DeBERTa-v3 ensemble, all with graceful fail-open
+* **Pre-spawn ML scan** on every user message plus tool output scan on every Read, Glob, Grep, WebFetch, Bash result
+* **Shield icon** with 3 states (green, amber, red) updating continuously via `/sidebar-chat` poll
+* **Canary leak banner** (centered alert-heavy, per approved design mockup) with expandable layer-score detail
+* **Attack telemetry** via existing `gstack-telemetry-log` to `community-pulse` to Supabase pipe (tier-gated, community uploads, anonymous local-only, off is no-op)
+* **`gstack-security-dashboard` CLI** — attacks detected last 7 days, top attacked domains, layer distribution, verdict split
+* **BrowseSafe-Bench smoke harness** — 200 cases from Perplexity's 3,680-case adversarial dataset, cached hermetically, gates on signal separation
+* **Live Playwright integration test** pins the L1 through L6 defense-in-depth contract
+* **Bun-native classifier research skeleton** plus design doc — WordPiece tokenizer matching transformers.js output, benchmark harness, FFI roadmap for future 5ms native inference
+
+### Hardening during ship
+
+Two independent adversarial reviewers (Claude subagent and Codex/gpt-5.4) converged on four bypass paths. All four fixed before merge:
+
+* **Canary stream-chunk split** — rolling-buffer detection across consecutive `text_delta` and `input_json_delta` events. Previously `.includes()` ran per-chunk, so an attacker could ask Claude to emit the canary split across two deltas and evade the check.
+* **Snapshot command bypass** — `$B snapshot` emits ARIA-name output from the page, but was missing from `PAGE_CONTENT_COMMANDS`, so malicious aria-labels flowed to Claude without the trust-boundary envelope every other read path gets.
+* **Tool-output single-layer BLOCK** — `combineVerdict` now accepts `{ toolOutput: true }`. On tool-result scans the Stack Overflow FP concern doesn't apply (content wasn't user-authored), so a single ML classifier at BLOCK threshold now blocks directly instead of degrading to WARN.
+* **Transcript classifier tool-output context** — Haiku previously saw only `user_message + tool_calls` (empty input) on tool-result scans, so only testsavant_content got a signal. Now receives the actual tool output text and can vote.
+
+Also: attribute-injection fix in `escapeHtml` (escapes `"` and `'` now), `GSTACK_SECURITY_OFF=1` is now a real gate in `loadTestsavant`/`loadDeberta` (not just a doc promise), device salt cached in-process so FS-unwritable environments don't break hash correlation, tool-use registry entries evicted on `tool_result` (memory leak fix), dashboard uses `jq` for brace-balanced JSON parse when available.
+
+### Haiku transcript classifier unbroken (silent bug + gate removal)
+
+The transcript classifier (`checkTranscript` calling `claude -p --model haiku`) was shipping dead. Two bugs:
+
+1. Model alias `haiku-4-5` returned 404 from the CLI. Correct shorthand is `haiku` (resolves to `claude-haiku-4-5-20251001` today, stays on the latest Haiku as models roll).
+2. The 2-second timeout was below the floor. Fresh `claude -p` spawn has ~2-3s CLI cold start + 5-12s inference on ~1KB prompts. At 2s every call timed out. Bumped to 15s.
+
+Compounding the dead classifier: `shouldRunTranscriptCheck` gated Haiku on any other layer firing at `>= LOG_ONLY`. On the ~85% of BrowseSafe-Bench attacks that L4 misses (TestSavantAI recall is ~15% on browser-agent-specific attacks), Haiku never got a chance to vote. We were gating our best signal on our weakest. For tool outputs this gate is now removed — L4 + L4c + Haiku always run in parallel.
+
+Review-on-BLOCK UX (centered alert-heavy banner with suspected text excerpt + per-layer scores + Allow / Block session buttons) lands alongside so false positives are recoverable instead of session-killing.
+
+### Measured: BrowseSafe-Bench (200-case smoke)
+
+Same 200 cases, before and after the fixes above:
+
+| | L4-only (before) | Ensemble with Haiku (after) |
+|---|---|---|
+| Detection rate | 15.3% | **67.3%** |
+| False-positive rate | 11.8% | 44.1% |
+| Runtime | ~90s | ~41 min (Haiku is the long pole) |
+
+**4.4x lift in detection.** FP rate also climbed 3.7x — Haiku is more aggressive and fires on edge cases that TestSavantAI smiles through. The review banner makes those FPs recoverable: user sees the suspected excerpt + layer scores, clicks Allow once, session continues. A P1 follow-up is tuning the Haiku WARN threshold (currently 0.6, probably should be 0.7-0.85) against real-world attempts.jsonl data once gstack users start reporting.
+
+Honest shipping posture: this is meaningfully safer than v1.3.x, not bulletproof. Canary (deterministic), content-security L1-L3 (structural), and the review banner remain the load-bearing defenses when the ML layers miss or over-fire.
+
+### Env knobs
+
+* `GSTACK_SECURITY_OFF=1` — emergency kill switch (canary still injected, ML skipped)
+* `GSTACK_SECURITY_ENSEMBLE=deberta` — opt-in 721MB DeBERTa-v3 ensemble classifier for 2-of-3 agreement
+
+### For contributors
+
+Supabase migration `004_attack_telemetry.sql` adds five nullable columns to `telemetry_events` (`security_url_domain`, `security_payload_hash`, `security_confidence`, `security_layer`, `security_verdict`) plus two partial indices for dashboard aggregation. `community-pulse` edge function aggregates the security section. Run `cd supabase && ./verify-rls.sh` and deploy via your normal Supabase deploy flow.
+
+---
+
+## [1.4.0.0] - 2026-04-20
+
+## **Turn any markdown file into a PDF that looks finished.**
+
+The new `/make-pdf` skill takes a `.md` file and produces a publication-quality PDF. 1 inch margins. Helvetica. Page numbers in the footer. Running header with the doc title. Curly quotes, em dashes, ellipsis (…). Optional cover page. Optional clickable table of contents. Optional diagonal DRAFT watermark. Copy any paragraph out of the PDF and paste it into a Google Doc: it pastes as one clean block, not "S a i l i n g" spaced out letter by letter. That last part is the whole game. Most markdown-to-PDF tools produce output that reads like a legal document run through a scanner three times. This one reads like a real essay or a real letter.
+
+### What you can do now
+
+- `$P generate letter.md` writes a clean letter PDF to `/tmp/letter.pdf` with sensible defaults.
+- `$P generate --cover --toc --author "Garry Tan" --title "On Horizons" essay.md essay.pdf` adds a left-aligned cover page (title, subtitle, date, hairline rule) and a TOC from your H1/H2/H3 headings.
+- `$P generate --watermark DRAFT memo.md draft.pdf` overlays a diagonal DRAFT watermark on every page. Send as draft. Drop the flag when it's final.
+- `$P generate --no-chapter-breaks memo.md` disables the default "every H1 starts a new page" behavior for memos that happen to have multiple top-level headings.
+- `$P generate --allow-network essay.md` lets external images load. Off by default so someone else's markdown can't phone home through a tracking pixel when you generate their PDF.
+- `$P preview essay.md` renders the same HTML and opens it in your browser. Refresh as you edit. Skip the PDF round trip until you're ready.
+- `$P setup` verifies browse + Chromium + pdftotext are installed and runs an end-to-end smoke test.
+
+### Why the text actually copies cleanly
+
+Headless Chromium emits per-glyph `Tj` operators for webfonts with non-standard metrics tables. That's why every other "markdown to PDF" tool produces PDFs where copy-paste turns "Sailing" into "S a i l i n g". We ship with system Helvetica for everything ... Chromium has native metrics for it and emits clean word-level `Tj` operators. The CI matrix runs a combined-features fixture (smartypants + hyphens + ligatures + bold/italic + inline code + lists + blockquote + chapter breaks, all on) through `pdftotext` and asserts the extracted text matches a handwritten expected file. If any feature breaks extraction, the gate fails.
+
+### Under the hood
+
+make-pdf shells out to `browse` for Chromium lifecycle. No second Playwright install, no second 58MB binary, no second codesigning dance. `$B pdf` grew from "take a screenshot as A4" into a real PDF engine with `--format`/`--width`/`--height`, `--margins`, `--header-template`/`--footer-template`, `--page-numbers`, `--tagged`, `--outline`, `--toc`, `--tab-id`, and `--from-file` for large payloads (Windows argv caps). `$B load-html` and `$B js` got `--tab-id` too, so parallel `$P generate` calls never race on the active tab. `$B newtab --json` returns structured output so make-pdf can parse the tab ID without regex-matching log strings.
+
+### For contributors
+
+- Skill file: `make-pdf/SKILL.md.tmpl`. Binary source: `make-pdf/src/`. Test fixtures: `make-pdf/test/fixtures/`. CI workflow: `.github/workflows/make-pdf-gate.yml`.
+- New resolver `{{MAKE_PDF_SETUP}}` emits the `$P=` alias with the same discovery order as `$B`: `MAKE_PDF_BIN` env override, then local skill root, then global install, then PATH.
+- Combined-features copy-paste gate is the P0 test in `make-pdf/test/e2e/combined-gate.test.ts`. Per-feature gates are P1 diagnostics.
+- Phase 4 deferrals: vendored Paged.js for accurate TOC page numbers, vendored highlight.js for syntax highlighting, drop caps, pull quotes, CMYK safe conversion, two-column layout.
+- Preamble bash now emits `_EXPLAIN_LEVEL` and `_QUESTION_TUNING` so downstream skills can read them at runtime. Golden-file fixtures updated to match.
+
 ## [1.3.0.0] - 2026-04-19
 
 ## **Your design skills learn your taste.**
